@@ -6,20 +6,20 @@ var cons=[];
 var games={};
 var userMaxId=0;
 var consListMes={free: {}, not_free: {}};
-
-Fs.readFile('user_max_id', 'utf8', function(err, res) 
+Fs.readFile(__dirname+'/user_max_id', 'utf8', function(err, res) 
 {
 	userMaxId=+res;
-
 	const wsServer=new Ws.Server({port: 8083});
-	wsServer.on('connection', function(ws) 
-	{				
-		var con=conId=false;
+	wsServer.on('connection', function(ws, req) 
+	{
+		console.log('new connection');
+		console.log(req.url+'');
+		var con=false, conId=false;
 	
 		ws.on('close', function()
 		{
 			if(con) con.offline=true;
-			sendConsLists();
+			sendConsLists();			
 		});
 		
 		ws.on('error', function(){});
@@ -27,7 +27,7 @@ Fs.readFile('user_max_id', 'utf8', function(err, res)
 		var conNotInited=true;
 		ws.on('message', function(mes)
 		{			
-			console.log(mes);
+			console.log('in:', mes, con.id, conId);
 			mes=JSON.parse(mes);
 			if(conNotInited)
 			{
@@ -36,35 +36,41 @@ Fs.readFile('user_max_id', 'utf8', function(err, res)
 				conId=authCons[mes.auth];
 				if(! conId)
 				{
-					conId=cons.length || 1;
+					conId=cons.length || 1;					
 					authCons[mes.auth]=conId;
 					con=cons[conId]={id: conId, invitesFrom: {}, invitesWho: {}};										
+													
+					con.invitesClear=function()
+					{
+						for(var id in this.invitesWho)
+						{
+							var con_=cons[id];
+							delete con_.invitesFrom[conId];
+							con_.sendInvites();						
+						}
+						this.invitesWho={};
+					}
+					con.sendInvites=function()
+					{					
+						con.send({tp: 'invites', invites_from: invitesList(this.invitesFrom), invites_who: invitesList(this.invitesWho)});
+					}
 				}
 				else
-				{
-					con=cons[authCons[mes.auth]];
+				{					
+					con=cons[authCons[mes.auth]];					
 					delete con.offline;
-				}								
+				}
 				
 				con.send=function(mes)
 				{
 					if(con.offline) return; 				
 					console.log('out:', mes, con.id);
 					ws.send(JSON.stringify(mes), function(){});
-				};				
-				con.invitesClear=function()
+				};	
+
+				con.sendEmpty=function()
 				{
-					for(var id in this.invitesWho)
-					{
-						var con_=cons[id];
-						delete con_.invitesFrom[conId];
-						con_.sendInvites();						
-					}
-				}
-				con.sendInvites=function()
-				{					
-					//console.log('this:', this);
-					con.send({tp: 'invites', invites_from: consOfflineClear(this.invitesFrom), invites_who: consOfflineClear(this.invitesWho)});
+					ws.send('', function(){});
 				}
 				
 				if(mes.name)
@@ -74,19 +80,27 @@ Fs.readFile('user_max_id', 'utf8', function(err, res)
 				else 
 				{
 					userMaxId++;
-					Fs.writeFile('user_max_id', userMaxId, function(){});
+					Fs.writeFile(__dirname+'/user_max_id', userMaxId, function(){});
 					con.name='user'+userMaxId;
 					con.send({tp: 'name_set', name: con.name});
 				}	
+				
+				if(! con.reconnect && con.opponent)
+				{					
+					con.opponent.send({tp: 'game_stop'});
+					delete con.opponent.opponent;	
+					delete con.opponent;					
+				}
 
 				sendConsLists();				
+				con.sendInvites();
 			}
 			else
 			{
-				if(mes.g)
+				if(mes.g && con.opponent)
 				{
 					con.opponent.send(mes);
-					if(mes.tp=='bh') console.log('HEREEERERERER');
+					con.send({});
 				}
 				else switch(mes.tp)
 				{					
@@ -96,7 +110,7 @@ Fs.readFile('user_max_id', 'utf8', function(err, res)
 						break;
 						
 					case 'invite_send':	
-						if(con.opponent) return;
+						if(con.opponent || conId==mes.id) return;
 						
 						var con_=cons[mes.id];
 						if(! con.invitesFrom[mes.id])
@@ -117,24 +131,32 @@ Fs.readFile('user_max_id', 'utf8', function(err, res)
 							con.sendInvites();
 							con_.sendInvites();
 							var t=new Date().getTime();
-							con.send({tp: "game_create", first_serve: true, t: t});
-							con_.send({tp: "game_create", first_serve: false, t: t});
+							con.send({tp: "game_create", first_serve: true, t: t, opponent: {id: con_.id, name: con_.name}});
+							con_.send({tp: "game_create", first_serve: false, t: t, opponent: {id: conId, name: con.name}});
 							
 							sendConsLists();
 						}
 						break;
 						
 					case 'invite_cancel':						
-						delete invitesFrom[conId];
+						delete cons[mes.id].invitesFrom[conId];
 						delete con.invitesWho[mes.id];
+						con.sendInvites();
+						cons[mes.id].sendInvites();
 						break;	
 
-					case 'game_leave':
-						delete con.opponent;
-						delete con_.opponent;
-						con_.send({tp: 'game_leave'});
+					case 'game_leave':		
+						if(! con.opponent) return;
+						con.opponent.send({tp: 'game_stop'});
+						con.send({tp: 'game_stop'});					
+						delete con.opponent.opponent;	
+						delete con.opponent;						
 						
 						sendConsLists();
+						break;
+						
+					case 'chat':					
+						sendToAll({tp: 'chat', id: conId, name: con.name, text: mes.text});
 						break;
 						
 					default:
@@ -159,7 +181,6 @@ function sendConsLists()
 		}
 		else
 		{
-			console.log('conId: '+con.id);
 			free.push({id: con.id, name: con.name});
 		}
 	}
@@ -171,12 +192,21 @@ function sendConsLists()
 	}
 }
 
-function consOfflineClear(ids)
+function invitesList(ids)
 {
-	var ids_=[];
-	for(var id in ids)		
+	var invites=[];
+	for(var id in ids)
 	{
-		if(! cons[id].offline) ids_.push(id);
+		var con=cons[id];
+		if(! con.offline) invites.push({id: id, name: con.name});
 	}
-	return ids_;
+	return invites;
+}
+
+function sendToAll(mes)
+{
+	for(var i in cons)
+	{
+		cons[i].send(mes);
+	}
 }
