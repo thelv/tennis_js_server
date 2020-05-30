@@ -19,7 +19,11 @@ Fs.readFile(__dirname+'/user_max_id', 'utf8', function(err, res)
 		ws.on('close', function()
 		{
 			if(con) con.offline=true;
-			sendConsLists();			
+			sendConsLists();
+			for(var id in con.invitesWho)
+			{
+				cons[id].sendInvites();
+			}
 		});
 		
 		ws.on('error', function(){});
@@ -100,19 +104,29 @@ Fs.readFile(__dirname+'/user_max_id', 'utf8', function(err, res)
 				if(mes.g && con.opponent)
 				{
 					con.opponent.send(mes);
-					con.send({});
+					//con.send({});
 				}
 				else switch(mes.tp)
 				{					
 					case 'name_set':				
 						con.name=mes.name;
 						sendConsLists();
+						for(var id in con.invitesWho)
+						{
+							cons[id].sendInvites();
+						}
+						for(var id in con.invitesFrom)
+						{
+							cons[id].sendInvites();
+						}
 						break;
 						
 					case 'invite_send':	
 						if(con.opponent || conId==mes.id) return;
 						
 						var con_=cons[mes.id];
+						if(con_.offline) return;
+						
 						if(! con.invitesFrom[mes.id])
 						{
 							con_.invitesFrom[conId]=true;
