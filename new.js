@@ -3,17 +3,18 @@ var Ws=require('ws');
 
 var authCons={};
 var cons=[];
-var games={};
+var games=[];
 var userMaxId=0;
 var consListMes={free: {}, not_free: {}};
+
 Fs.readFile(__dirname+'/user_max_id', 'utf8', function(err, res) 
 {
 	userMaxId=+res;
 	const wsServer=new Ws.Server({port: 8083});
-	wsServer.on('connection', function(ws, req) 
+	
+	wsServer.on('connection', function(ws, req)
 	{
 		console.log('new connection');
-		console.log(req.url+'');
 		var con=false, conId=false;
 	
 		ws.on('close', function()
@@ -42,40 +43,57 @@ Fs.readFile(__dirname+'/user_max_id', 'utf8', function(err, res)
 				{
 					conId=cons.length || 1;					
 					authCons[mes.auth]=conId;
-					con=cons[conId]={id: conId, invitesFrom: {}, invitesWho: {}};										
-													
-					con.invitesClear=function()
+					con=cons[conId]=
 					{
-						for(var id in this.invitesWho)
+						id: conId,
+						ws: ws,
+						invitesFrom: {},
+						invitesWho: {},														
+						invitesClear: function()
 						{
-							var con_=cons[id];
-							delete con_.invitesFrom[conId];
-							con_.sendInvites();						
-						}
-						this.invitesWho={};
-					}
-					con.sendInvites=function()
-					{					
-						con.send({tp: 'invites', invites_from: invitesList(this.invitesFrom), invites_who: invitesList(this.invitesWho)});
+							for(var id in this.invitesWho)
+							{
+								var con_=cons[id];
+								delete con_.invitesFrom[conId];
+								con_.sendInvites();						
+							}
+							this.invitesWho={};
+						},
+						sendInvites: function()
+						{					
+							function invitesList(ids)
+							{
+								var invites=[];
+								for(var id in ids)
+								{
+									var con=cons[id];
+									if(! con.offline) invites.push({id: id, name: con.name});
+								}
+								return invites;
+							}
+						
+							con.send({tp: 'invites', invites_from: invitesList(this.invitesFrom), invites_who: invitesList(this.invitesWho)});
+						},
+						send: function(mes)
+						{
+							if(con.offline) return; 				
+							console.log('out:', mes, con.id);
+							this.ws.send(JSON.stringify(mes), function(){});
+						},
+						sendEmpty: function()
+						{
+							this.ws.send('', function(){});
+						}				
 					}
 				}
 				else
 				{					
-					con=cons[authCons[mes.auth]];					
+					con=cons[authCons[mes.auth]];
+					con.ws=ws;					
 					delete con.offline;
 				}
 				
-				con.send=function(mes)
-				{
-					if(con.offline) return; 				
-					console.log('out:', mes, con.id);
-					ws.send(JSON.stringify(mes), function(){});
-				};	
-
-				con.sendEmpty=function()
-				{
-					ws.send('', function(){});
-				}
+				
 				
 				if(mes.name)
 				{
@@ -92,8 +110,7 @@ Fs.readFile(__dirname+'/user_max_id', 'utf8', function(err, res)
 				if(! con.reconnect && con.opponent)
 				{					
 					con.opponent.send({tp: 'game_stop'});
-					delete con.opponent.opponent;	
-					delete con.opponent;					
+					con.game.stop();
 				}
 
 				sendConsLists();				
@@ -104,11 +121,47 @@ Fs.readFile(__dirname+'/user_max_id', 'utf8', function(err, res)
 				if(mes.g && con.opponent)
 				{
 					con.opponent.send(mes);
+										
+					var game=con.game;
+					var gameState=game.state;						
+					mes.side=con.side;
+					switch(mes.tp)
+					{
+						case 'bh':						
+							gameState.ball.h=mes;
+							gameState.wait=0;
+							break;
+						
+						case 'pcp':						
+							con.player.cp=mes;
+							break;
+							
+						case 'pcpa':
+							con.player.cpa=mes;
+							break;
+						
+						case 'rw':
+							gameState.who_serve=! gameState.who_serve;
+							gameState.wait=-1;
+							game.score.change(con.playerId==0 ? mes.w : ! mes.w);
+							gameState.score=game.score.get();
+							gameState.ball={};
+							break;
+						
+						case 'wr':
+							if(mes.t>0) gameState.wait=mes.t;
+							break;
+					}					
+					
+					for(var id in con.game.viewers)
+					{
+						cons[id].send(mes);
+					}
 					//con.send({});
 				}
 				else switch(mes.tp)
 				{					
-					case 'name_set':				
+					case 'name_set':			
 						con.name=mes.name;
 						sendConsLists();
 						for(var id in con.invitesWho)
@@ -121,7 +174,7 @@ Fs.readFile(__dirname+'/user_max_id', 'utf8', function(err, res)
 						}
 						break;
 						
-					case 'invite_send':	
+					case 'invite_send':
 						if(con.opponent || conId==mes.id) return;
 						
 						var con_=cons[mes.id];
@@ -144,9 +197,40 @@ Fs.readFile(__dirname+'/user_max_id', 'utf8', function(err, res)
 							con_.invitesClear();
 							con.sendInvites();
 							con_.sendInvites();
+							
 							var t=new Date().getTime();
 							con.send({tp: "game_create", first_serve: true, t: t, opponent: {id: con_.id, name: con_.name}});
 							con_.send({tp: "game_create", first_serve: false, t: t, opponent: {id: conId, name: con.name}});
+							
+							var game=
+							{
+								id: games.length, 
+								t: t,
+								viewers: {},
+								score: new Score(),
+								state: {who_serve: true, wait: -1, players: [{}, {}], ball: {}},
+								cons: [con, con_],								
+								stop: function()
+								{
+									delete this.cons[0].opponent;	
+									delete this.cons[1].opponent;
+									
+									for(var id in this.viewers)
+									{
+										cons[id].send({tp: 'game_stop'});
+									}
+									delete games[this.id];
+								}
+							}
+							game.state.score=game.score.get();
+							
+							con.player=game.state.players[0];
+							con.side=true;
+							con_.player=game.state.players[1];
+							con_.side=false;
+							con.game=con_.game=game;
+							
+							games.push(game);
 							
 							sendConsLists();
 						}
@@ -157,16 +241,37 @@ Fs.readFile(__dirname+'/user_max_id', 'utf8', function(err, res)
 						delete con.invitesWho[mes.id];
 						con.sendInvites();
 						cons[mes.id].sendInvites();
-						break;	
+						break;
 
 					case 'game_leave':		
 						if(! con.opponent) return;
 						con.opponent.send({tp: 'game_stop'});
-						con.send({tp: 'game_stop'});					
-						delete con.opponent.opponent;	
-						delete con.opponent;						
-						
+						con.send({tp: 'game_stop'});	
+						con.game.stop();		
 						sendConsLists();
+						break;
+
+					case 'game_view':		
+						if(con.opponent) return;
+						var game=games[mes.id];
+						var con0=game.cons[0];
+						var con1=game.cons[1];						
+						con.send(
+						{
+							tp: "game_view", 
+							t: game.t,
+							players:
+							[
+								{
+									id: con0.id, name: con0.name
+								},
+								{
+									id: con1.id, name: con1.name
+								}							
+							],
+							state: game.state,
+						});						
+						game.viewers[conId]=true;
 						break;
 						
 					case 'chat':					
@@ -183,7 +288,7 @@ Fs.readFile(__dirname+'/user_max_id', 'utf8', function(err, res)
 function sendConsLists()
 {
 	var free=[];
-	var notFree=[];
+	//var notFree=[];
 	for(var i in cons)
 	{
 		var con=cons[i];
@@ -191,7 +296,7 @@ function sendConsLists()
 		
 		if(con.opponent)
 		{			
-			notFree.push({id: con.id, name: con.name});
+			//notFree.push({id: con.id, name: con.name});
 		}
 		else
 		{
@@ -199,22 +304,27 @@ function sendConsLists()
 		}
 	}
 	
+	var games_=[];
+	for(var i in games)
+	{
+		var game=games[i];
+		
+		games_.push({id: game.id, players:
+		[
+			{
+				id: game.cons[0].id, name: game.cons[0].name
+			},
+			{
+				id: game.cons[1].id, name: game.cons[1].name
+			}							
+		]});
+	}
+	
 	for(var i in cons)
 	{
-		var con=cons[i];		
-		con.send({tp: 'users', free: free, not_free: notFree});
+		var con=cons[i];	
+		con.send({tp: 'users', free: free, games: games_});
 	}
-}
-
-function invitesList(ids)
-{
-	var invites=[];
-	for(var id in ids)
-	{
-		var con=cons[id];
-		if(! con.offline) invites.push({id: id, name: con.name});
-	}
-	return invites;
 }
 
 function sendToAll(mes)
@@ -222,5 +332,62 @@ function sendToAll(mes)
 	for(var i in cons)
 	{
 		cons[i].send(mes);
+	}
+}
+
+Score=function()
+{
+	var score = [[0, 0], [0, 0], [0, 0]];
+	var scoreLimits = [7, 2];
+	var scoreAdv = -1;
+	var scoreInc = [0,-1];	
+	
+	this.get=function()
+	{
+		return score;
+	}
+		
+	this.change=function(whoWin, type=0)
+	{						
+		var whoWinInt = whoWin ? 0 : 1;
+		scoreInc = [type, whoWinInt];
+		var notWhoWinInt = whoWin ? 1 : 0;
+		var newScore = (score[type][whoWinInt] += 1)
+		if (newScore > scoreLimits[type])			
+		{
+			if (type == 0 && score[type][notWhoWinInt] == scoreLimits[0])
+			{
+				score[type][whoWinInt] = scoreLimits[0];
+				if (scoreAdv == whoWinInt)
+				{						
+					score[type] = [0, 0];
+					this.change(whoWin, type + 1);
+					scoreAdv = -1;
+				}
+				else if(scoreAdv==notWhoWinInt)
+				{						
+					scoreAdv = -1;
+				}
+				else
+				{
+					scoreAdv = whoWinInt;
+				}				
+			}
+			else
+			{
+				score[type] = [0, 0];
+				this.change(whoWin, type + 1);
+			}
+		}	
+
+		if(whoWin)
+		{	
+			//waitView.status('success');
+		}
+		else
+		{
+			//waitView.status('fail');
+		}						
+		//advice.refresh();
 	}
 }
