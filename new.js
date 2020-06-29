@@ -124,7 +124,9 @@ wsServer.on('connection', function(ws, req)
 				Fs.writeFile(__dirname+'/user_max_id', userMaxId, function(){});
 				con.name='user'+userMaxId;
 				con.send({tp: 'name_set', name: con.name});
-			}							
+			}	
+
+			con.send({tp: 'user_id', user_id: conId});
 
 			sendConsLists();				
 			con.sendInvites();
