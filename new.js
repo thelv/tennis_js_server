@@ -8,7 +8,7 @@ var games=[];
 var consListMes={free: {}, not_free: {}};
 var userMaxId=+Fs.readFileSync(__dirname+'/user_max_id', 'utf8');
 
-var httpsServer = Https.createServer({key: Fs.readFileSync('/etc/ssl/certs/cert_tennis_thelv_ru.key', 'utf8'), cert: Fs.readFileSync('/etc/ssl/certs/cert_tennis_thelv_ru.crt', 'utf8')});
+var httpsServer = Https.createServer({key: Fs.readFileSync('/etc/letsencrypt/live/tennis.thelv.ru/privkey.pem', 'utf8'), cert: Fs.readFileSync('/etc/letsencrypt/live/tennis.thelv.ru/fullchain.pem', 'utf8')});
 httpsServer.listen(8083);
 
 const wsServer=new Ws.Server({server: httpsServer});
