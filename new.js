@@ -414,4 +414,4 @@ Score=function()
 		}						
 		//advice.refresh();
 	}
-} 
+}
